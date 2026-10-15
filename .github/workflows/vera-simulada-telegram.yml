@@ -1,0 +1,72 @@
+name: vera-simulada-telegram
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vera-simulada-telegram
+  cancel-in-progress: false
+jobs:
+  enviar-nota:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Instalar dependencias de simulacion
+        run: pip install requests python-dotenv
+      - name: Generar y enviar solo la nota de Vera
+        env:
+          MODO_SIMULACION: '1'
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from mesa import config
+          from mesa.pipeline import pipeline, guardar_evidencia
+          from mesa.telegram_io import enviar
+          from mesa.agentes import DESCARGO
+
+          if not config.MODO_SIMULACION:
+              raise SystemExit('Esta ejecucion solo permite SIMULADO.')
+          if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
+              raise SystemExit('Falta configurar Telegram en Secrets.')
+          r = pipeline('AAPL', avisar=lambda texto: None, guardar=False)
+          a = r['entrega_2_analisis']
+          f, ind, lec = a['ficha'], a['indicadores'], a['lectura']
+          nota = '\n'.join([
+              '✍️ Vera · Comunicadora',
+              f"⚠️ {f['fuente']}",
+              f"📊 {f['ticker']} · {f['nombre']}",
+              'Vamos paso a paso.',
+              f"Precio: {f['precio']} USD ({ind['cambio_pct']} % en el día)",
+              f"Riesgo: {ind['semaforo_beta']} (beta {ind['beta']})",
+              'La beta compara los movimientos de la acción con los del mercado.',
+              lec['lectura_precio'], lec['lectura_valuacion'],
+              f"🔎 Para seguir aprendiendo: {lec['pregunta_para_investigar']}",
+              '', DESCARGO,
+          ])
+          assert len(nota) <= 900 and nota.endswith(DESCARGO)
+          r['entrega_3_nota'] = nota
+          r['tokens_api'] = {'entrada': 0, 'salida': 0}
+          r['aprobacion_humana'] = 'Ejecucion manual solicitada por el usuario'
+          guardar_evidencia(r)
+          try:
+              respuesta = enviar(config.TELEGRAM_CHAT_ID, nota)
+          except Exception:
+              raise SystemExit('No se pudo confirmar el envio. No se muestran detalles sensibles ni se reintenta automaticamente.') from None
+          registro = {'modo': 'SIMULADO', 'tokens_api_entrada': 0, 'tokens_api_salida': 0,
+                      'telegram_ok': respuesta.get('ok') is True, 'notas_enviadas': 1}
+          Path('salidas/registro-vera.json').write_text(json.dumps(registro, indent=2))
+          print('Telegram confirmo el envio de la nota personalizada de Vera. SIMULADO. Tokens API: 0.')
+          PY
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: evidencia-vera-simulada
+          path: salidas/
+          retention-days: 14
